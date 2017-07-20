@@ -6,7 +6,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 class ModelSelector(object):
 
     def __init__(self):
-        self.classifiers = [LogisticRegression(), RandomForestClassifier(), GradientBoostingClassifier()]
+        self.classifiers = [LogisticRegression(), RandomForestClassifier(n_estimators=100), GradientBoostingClassifier(subsample=0.5)]
         self.scores = []
         self.best_model_index = None
 
@@ -29,13 +29,21 @@ class ModelSelector(object):
         optimizing_metric = scores_matrix[:, metric_index_map.get(metric)]
         self.best_model_index = np.argmax(optimizing_metric)
 
-    def print_model_scores(self):
+    def get_all_classifiers(self):
+        '''
+        Returns all fitted classifiers contained in the instance variable self.classifiers
+        '''
+        return self.classifiers
+
+    def print_model_scores(self, X_test):
         for idx, classifier in enumerate(self.classifiers):
-            print classifier.__class__
+            print '\n', classifier.__class__
             print ' #  Accuracy: {:.5f}'.format(self.scores[idx][0])
             print ' # Precision: {:.5f}'.format(self.scores[idx][1])
             print ' #    Recall: {:.5f}'.format(self.scores[idx][2])
             print ' #  F1 Score: {:.5f}'.format(self.scores[idx][3])
+            print ' > Positives: {:.5f}'.format(np.mean(classifier.predict(X_test)))
+            print ' > Negatives: {:.5f}'.format(1 - np.mean(classifier.predict(X_test)))
             #print ' # {:s} Accuracy: {:.5f}'.format(classifier.__class__, score)
 
     def get_best_model(self, X_train, X_test, y_train, y_test):
