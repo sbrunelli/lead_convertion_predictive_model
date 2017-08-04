@@ -10,20 +10,20 @@ class FeatureExtractor(object):
 
     def _subset_columns(self):
         columns = [
-        'Order.Entry.CHF',
+        'Order.Entry.CHF'#,
         # 'Customer.Industry',
-        'Customer.First.Contact',
-        'Customer.Contacts.So.Far',
-        'Customer.ConvRatio.So.Far',
-        'Customer.ConvRatio.Last5',
-        'Customer.ConvRatio.LastYear',
-        'Customer.Order.Entry.CHF.std2avg',
-        'Customer.Last.Target',
-        'Customer.Days.Since.LastContact',
-        'Customer.Days.Since.LastWin',
-        'Customer.CHF.Last.Won',
-        'Customer.Days.Since.LastLoss',
-        'Customer.CHF.Last.Loss'#,
+        # 'Customer.First.Contact',
+        # 'Customer.Contacts.So.Far',
+        # 'Customer.ConvRatio.So.Far',
+        # 'Customer.ConvRatio.Last5',
+        # 'Customer.ConvRatio.LastYear',
+        # 'Customer.Order.Entry.CHF.std2avg',
+        # 'Customer.Last.Target',
+        # 'Customer.Days.Since.LastContact',
+        # 'Customer.Days.Since.LastWin',
+        # 'Customer.CHF.Last.Won',
+        # 'Customer.Days.Since.LastLoss',
+        # 'Customer.CHF.Last.Loss'#,
         #  'Year'
         ]
         self.data = self.data[columns]

@@ -1,2 +1,4 @@
 data/
 src/*pyc
+src/*ipynb
+notebooks/
