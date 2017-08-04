@@ -30,7 +30,13 @@ class DataCleaner(object):
         '''
         Attaches a dummy column of ones to allow easy aggregation calculations
         '''
-        self.data['one'] = 1
+        self.data['_one'] = 1
+
+    def _create_yesterday(self):
+        '''
+        Take the column Create.Day and creates a copy of it shifted back in time by 1 day
+        '''
+        self.data['Create.Yesterday'] = self.data['Create.Day'].map(lambda x: x-datetime.timedelta(days=1))
 
     def _create_target_variable(self):
         self.data['Target'] = self.data['Status.Category'].map(lambda x: 1 if x=='Won' else 0)
@@ -46,132 +52,124 @@ class DataCleaner(object):
 
     def _create_time_units(self):
         self.data['Year'] = self.data['Create.Day'].map(lambda x: x.year)
+        self.data['Month'] = self.data['Create.Day'].map(lambda x: x.month)
 
-    def _create_customer_metrics(self):
+    def _create_rolling_period_metrics(self, window_size, number_periods, period_suffix, group_dimension):
         '''
-        Creates all features related to relationship between Trivadis and the customers. These include:
+        This functions creates rolling metrics for:
+            - Number of Contacts
+            - Number of Wins
+            - Convertion Ratio
 
-        * 1st contact?
-        * how many contacts so far?
-        * convertion rate so far
-        * how many standard deviations is current offer removed from average
-        * convertion rate over last 5 opportunities
-        * how many contracts during last rolling year
-        * convertion rate during last rolling year
-        * last outcome
-        * time (days) since last offer
-        * time (days) since last Won
-        * time (days) since last loss
-        * Amount CHF last Won
-        * Amount CHF last loss
+        against a given dimension and for a given window_size.
         '''
 
-        def first_contact():
-            self.data = self.data.reset_index()
-            self.data = self.data.sort_values(by=['Customer', 'Create.Day', 'Opportunity.Number'])
-            self.data['Customer.Contacts.So.Far'] = self.data.groupby('Customer').cumsum()['one']
-            self.data['Customer.Contacts.So.Far'] = self.data['Customer.Contacts.So.Far'].map(lambda x: x - 1)
-            self.data['Customer.First.Contact'] = self.data['Customer.Contacts.So.Far'].map(lambda x: 1 if x==0 else 0)
-            self.data.set_index('Opportunity.Number', inplace=True)
+        # create timedelta in days
+        if window_size=='month':
+            multiplier=30
+        elif window_size=='year':
+            multiplier=365
+        timedelta = multiplier * number_periods
 
-        # def conv_rate_so_far():
-        #     self.data['Customer.Won.So.Far'] = self.data.groupby('Customer').cumsum()['Target']
-        #     self.data['Customer.ConvRatio.So.Far'] = self.data['Customer.Won.So.Far'].astype('float') / self.data['Customer.Contacts.So.Far']
-        #     # Shift it by 1 to avoid leakage
-        #     self.data['Customer.ConvRatio.So.Far'] = self.data.groupby('Customer')['Customer.ConvRatio.So.Far'].shift(1)
+        # sort data by Customer, Create.Day
+        self.data.sort_values(by=['Customer', 'Create.Day'], inplace=True)
 
-        def conv_rate_so_far():
-            self.data['Customer.Won.So.Far'] = self.data.groupby('Customer').cumsum()['Target']
-            # Shift it by 1 to avoid leakage
-            self.data['Customer.Won.So.Far'] = self.data.groupby('Customer')['Customer.Won.So.Far'].shift(1)
-            self.data['Customer.ConvRatio.So.Far'] = self.data['Customer.Won.So.Far'].astype('float') / (self.data['Customer.Contacts.So.Far'])
+        # create rolling series
+        rolling_metric = self.data[[group_dimension,
+                             'Create.Yesterday',
+                             'Target',
+                            '_one']].groupby(group_dimension).rolling(window=datetime.timedelta(days=timedelta),
+                                                                          on='Create.Yesterday',
+                                                                          min_periods=1).sum()[['Target', '_one']]
 
-        def conv_rate_last_five():
-            '''
-            Adds the features:
-                - Customer.Won.Last5
-                - Customer.ConvRatio.Last5
-            '''
-            # cust = 'Audi AG [2101]'
-            cvrl5 = self.data.groupby('Customer').rolling(window=5, on='Create.Day', min_periods=1).sum()['Target']
-            cvrl5 = cvrl5.reset_index()
-            cvrl5.drop('Customer', axis=1, inplace=True)
-            cvrl5.rename(columns={'Target': 'Customer.Won.Last5', 'level_1': 'Opportunity.Number'}, inplace=True)
-            self.data = self.data.reset_index()
-            self.data = self.data.merge(cvrl5, on='Opportunity.Number', how='left')
-            # Shift it by 1 to avoid leakage
-            self.data['Customer.Won.Last5'] = self.data.groupby('Customer')['Customer.Won.Last5'].shift(1)
-            self.data['Customer.ConvRatio.Last5'] = self.data['Customer.Won.Last5'] / self.data['Customer.Contacts.So.Far'].map(lambda x: min(x, 5))
-            self.data.set_index('Opportunity.Number', inplace=True)
+        # convert series to data frame
+        rolling_metric = pd.DataFrame(rolling_metric)
 
-        def conv_rate_last_year():
-            cvrly = self.data.groupby('Customer', ).rolling(window=datetime.timedelta(days=365), on='Create.Day', min_periods=1).sum()[['Target', 'one']]
-            cvrly = cvrly.reset_index()
-            print cvrly.head(5)
-            cvrly.drop('Customer', axis=1, inplace=True)
-            cvrly.rename(columns={'Target': 'Customer.Won.LastYear', 'one': 'Customer.Contacts.LastYear', 'level_1': 'Opportunity.Number'}, inplace=True)
-            self.data = self.data.reset_index()
-            self.data = self.data.merge(cvrly, on='Opportunity.Number', how='left')
-            self.data['Customer.Contacts.LastYear'] = self.data.groupby('Customer')['Customer.Contacts.LastYear'].shift(1)
-            # Shift it by 1 to avoid leakage
-            self.data['Customer.Won.LastYear'] = self.data.groupby('Customer')['Customer.Won.LastYear'].shift(1)
-            self.data['Customer.ConvRatio.LastYear'] = self.data['Customer.Won.LastYear'] / self.data['Customer.Contacts.LastYear']
-            self.data = self.data.set_index('Opportunity.Number')
+        # Reset index on temporary data frame
+        rolling_metric.reset_index(inplace=True)
 
-        def stddev_offer_to_avg_contract_size():
-            self.data['Order.Entry.CHF.Won'] = self.data['Order.Entry.CHF'] * self.data['Target']
-            # Shift it by 1 to avoid leakage
-            self.data['Customer.Avg.Order.Entry.CHF.So.Far'] = self.data.groupby('Customer').cumsum()['Order.Entry.CHF.Won'] / self.data['Customer.Won.So.Far']
-            self.data['Customer.Avg.Order.Entry.CHF.So.Far.Lag1'] = self.data.groupby('Customer')['Customer.Avg.Order.Entry.CHF.So.Far'].shift(1)
-            self.data['Customer.Order.Entry.CHF.std2avg'] = (self.data['Order.Entry.CHF'] - self.data['Customer.Avg.Order.Entry.CHF.So.Far.Lag1']) /  \
-                    self.data['Customer.Avg.Order.Entry.CHF.So.Far.Lag1'].map(lambda x: np.nan if x==0 else x)
-            self.data['Customer.Order.Entry.CHF.std2avg'] = self.data['Customer.Order.Entry.CHF.std2avg'].fillna(0)
-            self.data.drop(['Customer.Avg.Order.Entry.CHF.So.Far', 'Customer.Avg.Order.Entry.CHF.So.Far.Lag1'], axis=1, inplace=True)
+        # Rename columns
+        n_wins_metric_name = '_'+group_dimension+'.Win.'+period_suffix
+        n_contacts_metric_name = '_'+group_dimension+'.Contacts.'+period_suffix
+        rolling_metric.rename(columns={'Target': n_wins_metric_name,
+                                       '_one': n_contacts_metric_name},
+                              inplace=True)
 
-        def last_outcome():
-            self.data['Customer.Last.Target'] = self.data.groupby('Customer')['Target'].shift(1)
+        # Drop customer columns
+        rolling_metric.drop('Customer', axis=1, inplace=True)
 
-        def time_since_last_contact():
-            self.data['Customer.Days.Since.LastContact'] = (self.data['Create.Day'] - self.data.groupby('Customer')['Create.Day'].shift(1)).dt.days
+        # Reset index on main data frame
+        self.data.reset_index(inplace=True)
 
-        def time_since_chf_last_win():
-            idxWon = (self.data.Target == 1)
-            self.data.loc[idxWon, 'Customer.Last.Day.Won'] = self.data.loc[idxWon, 'Create.Day']
-            self.data['Customer.Last.Day.Won'] = self.data.groupby('Customer')['Customer.Last.Day.Won'].fillna(method='ffill')
-            self.data['Customer.Last.Day.Won'] = self.data.groupby('Customer')['Customer.Last.Day.Won'].shift(1)
-            self.data['Customer.Days.Since.LastWin'] = (self.data['Create.Day'] - self.data['Customer.Last.Day.Won']).dt.days
-            self.data.loc[idxWon, 'Customer.CHF.Last.Won'] = self.data.loc[idxWon, 'Order.Entry.CHF']
-            self.data['Customer.CHF.Last.Won'] = self.data.groupby('Customer')['Customer.CHF.Last.Won'].fillna(method='ffill')
-            self.data['Customer.CHF.Last.Won'] = self.data.groupby('Customer')['Customer.CHF.Last.Won'].shift(1)
-            self.data.drop(['Customer.Last.Day.Won'], axis=1, inplace=True)
+        # Merge df with rolling_metric
+        self.data = self.data.merge(rolling_metric, on='Opportunity.Number', how='left')
 
-        def time_since_chf_last_loss():
-            idxLost = (self.data.Target == 0)
-            self.data.loc[idxLost, 'Customer.Last.Day.Loss'] = self.data.loc[idxLost, 'Create.Day']
-            self.data['Customer.Last.Day.Loss'] = self.data.groupby('Customer')['Customer.Last.Day.Loss'].fillna(method='ffill')
-            self.data['Customer.Last.Day.Loss'] = self.data.groupby('Customer')['Customer.Last.Day.Loss'].shift(1)
-            self.data['Customer.Days.Since.LastLoss'] = (self.data['Create.Day'] - self.data['Customer.Last.Day.Loss']).dt.days
-            self.data.loc[idxLost, 'Customer.CHF.Last.Loss'] = self.data.loc[idxLost, 'Order.Entry.CHF']
-            self.data['Customer.CHF.Last.Loss'] = self.data.groupby('Customer')['Customer.CHF.Last.Loss'].fillna(method='ffill')
-            self.data['Customer.CHF.Last.Loss'] = self.data.groupby('Customer')['Customer.CHF.Last.Loss'].shift(1)
-            self.data.drop(['Customer.Last.Day.Loss'], axis=1, inplace=True)
+        # Substract same day's victories:
+        # everything that happened the same day as current opportunity has no influence on the previous relationship
+        # between Trivadis and the customer.
+        # Current outcome is leaky, must be discarded too.
+        self.data.set_index('Opportunity.Number', inplace=True)
+        rolling_metric_yesterday = pd.DataFrame(self.data[[group_dimension,
+                                                    'Create.Yesterday',
+                                                    'Target',
+                                                     '_one']].groupby(['Customer',
+                                                                         'Create.Yesterday']).cumsum()[['Target',
+                                                                                                      '_one']]).reset_index()
+        rolling_metric_yesterday.rename(columns={'Target': n_wins_metric_name+'_yesterday',
+                                                '_one': n_contacts_metric_name+'_yesterday'},
+                                        inplace=True)
+        self.data.reset_index(inplace=True)
+        self.data = self.data.merge(rolling_metric_yesterday, on='Opportunity.Number', how='left')
 
-        # pass
-        first_contact()
-        conv_rate_so_far()
-        conv_rate_last_five()
-        conv_rate_last_year()
-        # stddev_offer_to_avg_contract_size()
-        # last_outcome()
-        # time_since_last_contact()
-        # time_since_chf_last_win()
-        # time_since_chf_last_loss()
+        self.data[n_contacts_metric_name[1:]] = self.data[n_contacts_metric_name] - self.data[n_contacts_metric_name+'_yesterday']
+        self.data[n_wins_metric_name[1:]] = self.data[n_wins_metric_name] - self.data[n_wins_metric_name+'_yesterday']
+        self.data[group_dimension+'.ConvRatio.'+period_suffix] = self.data[n_wins_metric_name[1:]] / self.data[n_contacts_metric_name[1:]]
+        self.data[group_dimension+'.ConvRatio.'+period_suffix] = self.data[group_dimension+'.ConvRatio.'+period_suffix].fillna(.0)
 
-    def _drop_one(self):
+        # Reset data frame index to Opportunity Number
+        self.data.set_index('Opportunity.Number', inplace=True)
+
+    def _create_trends(self):
+
+        # Selects subset of columns to use for trends calculations
+        columns = ['Customer.ConvRatio.LY',
+                  'Customer.ConvRatio.LS',
+                  'Customer.ConvRatio.LQ',
+                  'Customer.ConvRatio.LM']
+        df_matrix = self.data[columns].copy().values
+
+        # Creates initial trends array
+        nrows = df_matrix.shape[0]
+        trends = np.chararray(shape=nrows, itemsize=100)
+        trends[:] = 'None'
+
+        # Creates trends masks
+        long_term_down_mask = ((df_matrix[:,0] > df_matrix[:,1]) & (df_matrix[:,1] > df_matrix[:,2]) & (df_matrix[:,2] > df_matrix[:,3]))
+        long_term_up_mask = ((df_matrix[:,0] < df_matrix[:,1]) & (df_matrix[:,1] < df_matrix[:,2]) & (df_matrix[:,2] < df_matrix[:,3]))
+        mid_term_down_mask = ((df_matrix[:,1] > df_matrix[:,2]) & (df_matrix[:,2] > df_matrix[:,3]))
+        mid_term_up_mask = ((df_matrix[:,1] < df_matrix[:,2]) & (df_matrix[:,2] < df_matrix[:,3]))
+        short_term_down_mask = ((df_matrix[:,2] > df_matrix[:,3]))
+        short_term_up_mask = ((df_matrix[:,2] < df_matrix[:,3]))
+
+        # Applies masks, short period to long period priority (long period trends are supposed to be stronger)
+        trends[short_term_up_mask] = 'Short term growth'
+        trends[short_term_down_mask] = 'Short term decrease'
+        trends[mid_term_up_mask] = 'Mid term growth'
+        trends[mid_term_down_mask] = 'Mid term decrease'
+        trends[long_term_up_mask] = 'Long term growth'
+        trends[long_term_down_mask] = 'Long term decrease'
+
+        # Appends trends as new columns to data frame
+        self.data['Customer.Trends'] = trends
+
+    def _drop_temporary_columns(self):
         '''
-        Drops the dummy column of ones
+        Drops all remaining temporary columns, those that start with _
         '''
-        self.data.drop('one', axis=1, inplace=True)
+        def drop_column(col):
+            del self.data[col]
+
+        [drop_column(column) for column in self.data.columns.tolist() if column.startswith('_')]
 
     def _drop_initial_bulk_load(self):
         '''
@@ -185,10 +183,15 @@ class DataCleaner(object):
         self._drop_quantity_gt_one()
         self._drop_na_customers()
         self._clean_order_entry_chf()
-        # self._attach_one()
-        # self._create_time_units()
+        self._attach_one()
+        self._create_yesterday()
+        self._create_time_units()
         self._create_target_variable()
-        # self._create_customer_metrics()
-        # self._drop_one()
+        self._create_rolling_period_metrics(window_size='year', number_periods=1, period_suffix='LY', group_dimension='Customer')
+        self._create_rolling_period_metrics(window_size='month', number_periods=6, period_suffix='LS', group_dimension='Customer')
+        self._create_rolling_period_metrics(window_size='month', number_periods=3, period_suffix='LQ', group_dimension='Customer')
+        self._create_rolling_period_metrics(window_size='month', number_periods=1, period_suffix='LM', group_dimension='Customer')
+        self._create_trends()
+        self._drop_temporary_columns()
         # self._drop_initial_bulk_load()
         return self.data
